@@ -1,4 +1,8 @@
+aclocal.m4
+autom4te.cache
 Makefile
+Makefile.in
+configure
 config.cache
 config.guess
 config.log
@@ -9,3 +13,4 @@ install-sh
 missing
 mkinstalldirs
 *.o
+*.a
