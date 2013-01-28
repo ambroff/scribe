@@ -137,6 +137,7 @@ void StoreQueue::configureAndOpen(pStoreConf configuration) {
 void StoreQueue::stop() {
   if (isModel) {
     LOG_OPER("ERROR: called stop() on model store");
+    return;
   } else if(!stopping) {
     pthread_mutex_lock(&cmdMutex);
     StoreCommand cmd(CMD_STOP);
@@ -193,7 +194,6 @@ std::string StoreQueue::getBaseType() {
 }
 
 void StoreQueue::threadMember() {
-  LOG_OPER("store thread starting");
   if (isModel) {
     LOG_OPER("ERROR: store thread starting on model store, exiting");
     return;
@@ -213,7 +213,6 @@ void StoreQueue::threadMember() {
   struct timespec abs_timeout;
 
   bool stop = false;
-  bool open = false;
   while (!stop) {
 
     // handle commands
@@ -226,12 +225,9 @@ void StoreQueue::threadMember() {
       switch (cmd.command) {
       case CMD_CONFIGURE:
         configureInline(cmd.configuration);
-        openInline();
-        open = true;
         break;
       case CMD_OPEN:
         openInline();
-        open = true;
         break;
       case CMD_STOP:
         stop = true;
@@ -246,7 +242,9 @@ void StoreQueue::threadMember() {
     time_t this_loop;
     time(&this_loop);
     if (!stop && ((this_loop - last_periodic_check) >= checkPeriod)) {
-      if (open) store->periodicCheck();
+      if (store->isOpen()) {
+        store->periodicCheck();
+      }
       last_periodic_check = this_loop;
     }
 
@@ -349,6 +347,7 @@ void StoreQueue::configureInline(pStoreConf configuration) {
 
   string tmp;
   if (configuration->getString("must_succeed", tmp) && tmp == "no") {
+    LOG_OPER("[%s] Setting mustSucceed to false.", categoryHandled.c_str());
     mustSucceed = false;
   }
 

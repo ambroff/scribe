@@ -50,12 +50,23 @@ if DEBUG
    DEBUG_CPPFLAGS = -DDEBUG_TIMING
 endif
 
+BOOST_STATIC_LIBS = $(BOOST_ROOT)/lib/libboost_system.a $(BOOST_ROOT)/lib/libboost_filesystem.a  $(BOOST_ROOT)/lib/libboost_regex.a
 
 # Set libraries external to this component.
-EXTERNAL_LIBS = -L$(thrift_home)/lib -L$(fb303_home)/lib -L$(hadoop_home)/lib -lfb303 -lthrift -lthriftnb
+EXTERNAL_LIBS = $(fb303_home)/lib/libfb303.a  $(thrift_home)/lib/libthrift.a $(thrift_home)/lib/libthriftnb.a -L$(hadoop_home)/lib
 EXTERNAL_LIBS += -levent -lpthread
+EXTERNAL_LIBS += $(BOOST_STATIC_LIBS)
 if USE_SCRIBE_HDFS
   EXTERNAL_LIBS += -lhdfs -ljvm
+endif
+if USE_ZOOKEEPER
+  EXTERNAL_LIBS += -lzookeeper_mt
+endif
+if USE_TCMALLOC
+  EXTERNAL_LIBS += -ltcmalloc
+endif
+if HAVE_LZO
+  EXTERNAL_LIBS += -llzo2
 endif
 
 # Section 2 ############################################################################
@@ -71,8 +82,6 @@ AM_CPPFLAGS += -I$(fb303_home)/include/thrift/fb303
 AM_CPPFLAGS += -I$(hadoop_home)/include
 AM_CPPFLAGS += $(BOOST_CPPFLAGS)
 AM_CPPFLAGS += $(FB_CPPFLAGS) $(DEBUG_CPPFLAGS)
-
-AM_LDFLAGS = $(BOOST_LDFLAGS) $(BOOST_SYSTEM_LIB) $(BOOST_FILESYSTEM_LIB)
 
 # Section 3 #############################################################################
 # GENERATE BUILD RULES
@@ -100,15 +109,26 @@ endif
 
 # Binaries -- multiple progs can be defined.
 bin_PROGRAMS = scribed
-scribed_SOURCES = store.cpp store_queue.cpp conf.cpp file.cpp conn_pool.cpp scribe_server.cpp network_dynamic_config.cpp dynamic_bucket_updater.cpp $(FB_SOURCES) $(ENV_SOURCES)
+scribed_SOURCES = source.cpp store.cpp store_queue.cpp SourceConf.cpp conf.cpp file.cpp conn_pool.cpp scribe_server.cpp network_dynamic_config.cpp dynamic_bucket_updater.cpp url.cpp $(FB_SOURCES) $(ENV_SOURCES)
 if USE_SCRIBE_HDFS
   scribed_SOURCES += HdfsFile.cpp
+endif
+if USE_ZOOKEEPER
+  scribed_SOURCES += zk_client.cpp
+  scribed_SOURCES += zk_agg_selector.cpp
 endif
 scribed_LDADD = $(EXTERNAL_LIBS) $(INTERNAL_LIBS)
 
 if SHARED
 scribed_DEPENDENCIES = libscribe.so
 endif
+
+TESTS = url_test
+check_PROGRAMS = $(TESTS)
+url_test_SOURCES = url.h url.cpp url_test.cpp
+url_test_CXXFLAGS = $(CPPUNIT_CFLAGS)
+url_test_LDFLAGS = $(CPPUNIT_LIBS)
+url_test_LDADD = $(BOOST_STATIC_LIBS)
 
 # Section 4 ##############################################################################
 # Set up Thrift specific activity here.

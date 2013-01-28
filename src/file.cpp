@@ -53,9 +53,14 @@ std::vector<std::string> FileInterface::list(const std::string& path, const std:
 
 FileInterface::FileInterface(const std::string& name, bool frame)
   : framed(frame), filename(name) {
+  LZOCompressionLevel = 0;
 }
 
 FileInterface::~FileInterface() {
+}
+
+void FileInterface::setShouldLZOCompress(int compressionLevel) {
+  LZOCompressionLevel = compressionLevel;
 }
 
 StdFile::StdFile(const std::string& name, bool frame)
@@ -74,6 +79,19 @@ bool StdFile::openRead() {
 }
 
 bool StdFile::openWrite() {
+  /* try to create the directory containing the file */
+  string::size_type slash;
+  if (!filename.empty() &&
+      (filename.find_first_of("/") != string::npos) &&
+      (filename.find_first_of("/") != (slash = filename.find_last_of("/")))) {
+    try {
+      boost::filesystem::create_directories(filename.substr(0, slash));
+    } catch(std::exception const& e) {
+      LOG_OPER("Exception < %s > trying to create directory", e.what());
+      return false;
+    }
+  }
+
   // open file for write in append mode
   ios_base::openmode mode = fstream::out | fstream::app;
   return open(mode);
@@ -119,8 +137,7 @@ string StdFile::getFrame(unsigned data_length) {
 }
 
 bool StdFile::write(const std::string& data) {
-
-  if (!file.is_open()) {
+  if (!isOpen() && !openWrite()) {
     return false;
   }
 
@@ -245,7 +262,7 @@ void StdFile::listImpl(const std::string& path, std::vector<std::string>& _retur
       boost::filesystem::directory_iterator dir_iter(path), end_iter;
 
       for ( ; dir_iter != end_iter; ++dir_iter) {
-        _return.push_back(dir_iter->filename());
+        _return.push_back(dir_iter->path().filename().string());
       }
     }
   } catch (const std::exception& e) {

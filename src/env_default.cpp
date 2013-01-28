@@ -122,10 +122,10 @@ void scribe::startServer() {
                                           thread_manager
                                         ));
   g_Handler->setServer(server);
-
   LOG_OPER("Starting scribe server on port %lu", g_Handler->port);
   fflush(stderr);
 
+#ifdef THRIFT_POST_2_0    
   // throttle concurrent connections
   unsigned long mconn = g_Handler->getMaxConn();
   if (mconn > 0) {
@@ -133,6 +133,7 @@ void scribe::startServer() {
     server->setMaxConnections(mconn);
     server->setOverloadAction(T_OVERLOAD_CLOSE_ON_ACCEPT);
   }
+#endif
 
   server->serve();
   // this function never returns

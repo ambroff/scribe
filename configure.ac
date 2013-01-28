@@ -14,6 +14,7 @@ AM_INIT_AUTOMAKE([foreign -Wall])
 # To install locally
 FB_INITIALIZE([localinstall])
 AC_PREFIX_DEFAULT([/usr/local])
+AM_PATH_CPPUNIT(1.9.6)
 
 ############################################################################
 # User Configurable. Change With CAUTION!
@@ -48,6 +49,10 @@ FB_ENABLE_DEFAULT_STATIC
 # Example: Macro supplies -DFACEBOOK at compile time and "if FACEBOOK endif" capabilities.
 FB_ENABLE_FEATURE([FACEBOOK], [facebook])
 FB_ENABLE_FEATURE([USE_SCRIBE_HDFS], [hdfs])
+FB_ENABLE_FEATURE([HAVE_LZO], [lzo])
+FB_ENABLE_FEATURE([USE_ZOOKEEPER], [zookeeper])
+FB_ENABLE_FEATURE([USE_TCMALLOC], [tcmalloc])
+FB_ENABLE_FEATURE([THRIFT_POST_2_0], [thriftpost20])
 
 # Personalized path generator Sets default paths. Provides --with-xx=DIR options.
 # FB_WITH_PATH([<var>_home], [<var>path], [<default location>]

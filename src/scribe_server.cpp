@@ -21,8 +21,10 @@
 // @author Avinash Lakshman
 // @author Anthony Giardullo
 
+int debug_level = 0;
 #include "common.h"
 #include "scribe_server.h"
+#include "SourceConf.h"
 
 using namespace apache::thrift::concurrency;
 
@@ -32,6 +34,7 @@ using namespace facebook;
 using namespace scribe::thrift;
 using namespace std;
 
+using boost::property_tree::ptree;
 using boost::shared_ptr;
 
 shared_ptr<scribeHandler> g_Handler;
@@ -42,8 +45,9 @@ shared_ptr<scribeHandler> g_Handler;
 #define DEFAULT_SERVER_THREADS     3
 #define DEFAULT_MAX_CONN           0
 
-static string overall_category = "scribe_overall";
 static string log_separator = ":";
+
+#define DEFAULT_UPDATE_STATUS_INTERVAL  60
 
 void print_usage(const char* program_name) {
   cout << "Usage: " << program_name << " [-p port] [-c config_file]" << endl;
@@ -55,7 +59,7 @@ void scribeHandler::incCounter(string category, string counter) {
 
 void scribeHandler::incCounter(string category, string counter, long amount) {
   incrementCounter(category + log_separator + counter, amount);
-  incrementCounter(overall_category + log_separator + counter, amount);
+  incrementCounter(counter, amount);
 }
 
 void scribeHandler::incCounter(string counter) {
@@ -63,7 +67,23 @@ void scribeHandler::incCounter(string counter) {
 }
 
 void scribeHandler::incCounter(string counter, long amount) {
-  incrementCounter(overall_category + log_separator + counter, amount);
+  incrementCounter(counter, amount);
+}
+
+void scribeHandler::setCounter(string counter, long amount) {
+  FacebookBase::setCounter(counter, amount);
+}
+
+string scribeHandler::resultCodeToString(ResultCode::type rc) {
+  if (rc == ResultCode::OK) {
+    return "OK";
+  } else if (rc == ResultCode::TRY_LATER) {
+    return "TRY_LATER";
+  } else {
+    LOG_OPER("ERROR: Unknown ResultCode! This may be extremely bad.");
+    incCounter("critical error", 1);
+    return "UNKNOWN";
+  }
 }
 
 int main(int argc, char **argv) {
@@ -76,12 +96,13 @@ int main(int argc, char **argv) {
     }
 
     int next_option;
-    const char* const short_options = "hp:c:";
+    const char* const short_options = "hdp:c:";
     const struct option long_options[] = {
-      { "help",   0, NULL, 'h' },
-      { "port",   0, NULL, 'p' },
-      { "config", 0, NULL, 'c' },
-      { NULL,     0, NULL, 'o' },
+        { "help",   0, NULL, 'h' },
+        { "debug",  0, NULL, 'd' },
+        { "port",   0, NULL, 'p' },
+        { "config", 0, NULL, 'c' },
+        { NULL,     0, NULL, 'o' },
     };
 
     unsigned long int port = 0;  // this can also be specified in the conf file, which overrides the command line
@@ -92,6 +113,9 @@ int main(int argc, char **argv) {
       case 'h':
         print_usage(argv[0]);
         exit(0);
+      case 'd':
+        debug_level = 1;
+        break;
       case 'c':
         config_file = optarg;
         break;
@@ -100,6 +124,8 @@ int main(int argc, char **argv) {
         break;
       }
     }
+
+    LOG_DEBUG("DEBUG: Scribe started in debug mode");
 
     // assume a non-option arg is a config file name
     if (optind < argc && config_file.empty()) {
@@ -132,9 +158,10 @@ scribeHandler::scribeHandler(unsigned long int server_port, const std::string& c
     statusDetails("initial state"),
     numMsgLastSecond(0),
     maxMsgPerSecond(DEFAULT_MAX_MSG_PER_SECOND),
-    maxConn(DEFAULT_MAX_CONN),
     maxQueueSize(DEFAULT_MAX_QUEUE_SIZE),
-    newThreadPerCategory(true) {
+    maxConn(DEFAULT_MAX_CONN),
+    newThreadPerCategory(true),
+    zkClient(NULL) {
   time(&lastMsgTime);
   scribeHandlerLock = scribe::concurrency::createReadWriteMutex();
 }
@@ -226,7 +253,10 @@ const char* scribeHandler::statusAsString(fb_status status) {
 
 // Should be called while holding a writeLock on scribeHandlerLock
 bool scribeHandler::createCategoryFromModel(
-  const string &category, const boost::shared_ptr<StoreQueue> &model) {
+    const string &category, const boost::shared_ptr<StoreQueue> &model) {
+
+  LOG_OPER("[%s] Creating new category from model %s", category.c_str(),
+      model->getCategoryHandled().c_str());
 
   // Make sure the category name is sane.
   try {
@@ -248,9 +278,6 @@ bool scribeHandler::createCategoryFromModel(
     pstore = shared_ptr<StoreQueue>(new StoreQueue(model, category));
     LOG_OPER("[%s] Creating new category store from model %s",
              category.c_str(), model->getCategoryHandled().c_str());
-
-    // queue a command to the store to open it
-    pstore->open();
   } else {
     // Use existing StoreQueue
     pstore = model;
@@ -271,6 +298,30 @@ bool scribeHandler::createCategoryFromModel(
   return true;
 }
 
+void scribeHandler::setQueueSizeCounter(bool get_read_lock) {
+  if (get_read_lock) scribeHandlerLock->acquireRead();
+  unsigned long long queue_size = 0;
+  for (category_map_t::iterator cat_iter = categories.begin();
+      cat_iter != categories.end();
+      ++cat_iter) {
+    shared_ptr<store_list_t> pstores = cat_iter->second;
+    if (!pstores) {
+      throw std::logic_error("throttle check: iterator in category map holds null pointer");
+    }
+    for (store_list_t::iterator store_iter = pstores->begin();
+        store_iter != pstores->end();
+        ++store_iter) {
+      if (*store_iter == NULL) {
+        throw std::logic_error("throttle check: iterator in store map holds null pointer");
+      } else {
+        unsigned long long size = (*store_iter)->getSize();
+        queue_size += size;
+      }
+    }
+  }
+  g_Handler->setCounter("queue size", queue_size);
+  if (get_read_lock) scribeHandlerLock->release();
+}
 
 // Check if we need to deny this request due to throttling
 bool scribeHandler::throttleRequest(const vector<LogEntry>&  messages) {
@@ -280,43 +331,34 @@ bool scribeHandler::throttleRequest(const vector<LogEntry>&  messages) {
     return true;
   }
 
-  // Throttle based on store queues getting too long.
-  // Note that there's one decision for all categories, because the whole array passed to us
-  // must either succeed or fail together. Checking before we've queued anything also has
-  // the nice property that any size array will succeed if we're unloaded before attempting
-  // it, so we won't hit a case where there's a client request that will never succeed.
-  // Also note that we always check all categories, not just the ones in this request.
-  // This is a simplification based on the assumption that most Log() calls contain most
-  // categories.
-  unsigned long long max_count = 0;
-  for (category_map_t::iterator cat_iter = categories.begin();
-       cat_iter != categories.end();
-       ++cat_iter) {
-    shared_ptr<store_list_t> pstores = cat_iter->second;
-    if (!pstores) {
-      throw std::logic_error("throttle check: iterator in category map holds null pointer");
-    }
-    for (store_list_t::iterator store_iter = pstores->begin();
-         store_iter != pstores->end();
-         ++store_iter) {
-      if (*store_iter == NULL) {
-        throw std::logic_error("throttle check: iterator in store map holds null pointer");
-      } else {
-        unsigned long long size = (*store_iter)->getSize();
-        if (size > maxQueueSize) {
-          incCounter((*store_iter)->getCategoryHandled(), "denied for queue size");
-          return true;
-        }
-      }
-    }
+  // Accept messages if this single vector is larger than maxQueueSize.
+  // Denying would be worse as the memory has already been consumed and
+  // misbehaving clients may continue sending it over and over.
+  if (messages.capacity() > maxQueueSize) {
+    LOG_OPER("Throttle allowing ridiculously large <%lu> byte packet with <%lu> messages for exceeding queue size.",
+        messages.capacity(), messages.size())
+    return false;
   }
 
+  // Deny messages if the total size of all queues, plus new messages,
+  // would exceed maxQueueSize.
+  setQueueSizeCounter(false);
+  unsigned long long queue_size = getCounter("queue size");
+  if ((queue_size + messages.capacity()) > maxQueueSize) {
+    LOG_OPER("Throttle denying <%lu> byte packet with <%lu> messages for queue size. ",
+      messages.size(), messages.capacity());
+    LOG_OPER("Current queue size: <%llu>. Max queue size: <%llu>.",
+      queue_size, maxQueueSize);
+    return true;
+  }
+
+  // Accept these messages.
   return false;
 }
 
 // Should be called while holding a writeLock on scribeHandlerLock
 shared_ptr<store_list_t> scribeHandler::createNewCategory(
-  const string& category) {
+    const string& category) {
 
   shared_ptr<store_list_t> store_list;
 
@@ -338,7 +380,7 @@ shared_ptr<store_list_t> scribeHandler::createNewCategory(
         store_list = cat_iter->second;
       } else {
         LOG_OPER("failed to create new prefix store for category <%s>",
-                 category.c_str());
+            category.c_str());
       }
 
       break;
@@ -367,15 +409,15 @@ shared_ptr<store_list_t> scribeHandler::createNewCategory(
 
 // Add this message to every store in list
 void scribeHandler::addMessage(
-  const LogEntry& entry,
-  const shared_ptr<store_list_t>& store_list) {
+    const LogEntry& entry,
+    const shared_ptr<store_list_t>& store_list) {
 
   int numstores = 0;
 
   // Add message to store_list
   for (store_list_t::iterator store_iter = store_list->begin();
-       store_iter != store_list->end();
-       ++store_iter) {
+      store_iter != store_list->end();
+      ++store_iter) {
     ++numstores;
     boost::shared_ptr<LogEntry> ptr(new LogEntry);
     ptr->category = entry.category;
@@ -392,23 +434,23 @@ void scribeHandler::addMessage(
 }
 
 
-ResultCode scribeHandler::Log(const vector<LogEntry>&  messages) {
-  ResultCode result = TRY_LATER;
+ResultCode::type scribeHandler::Log(const vector<LogEntry>&  messages) {
+  ResultCode::type result = ResultCode::TRY_LATER;
 
   scribeHandlerLock->acquireRead();
   if(status == STOPPING) {
-    result = TRY_LATER;
+    result = ResultCode::TRY_LATER;
     goto end;
   }
 
   if (throttleRequest(messages)) {
-    result = TRY_LATER;
+    result = ResultCode::TRY_LATER;
     goto end;
   }
 
   for (vector<LogEntry>::const_iterator msg_iter = messages.begin();
-       msg_iter != messages.end();
-       ++msg_iter) {
+      msg_iter != messages.end();
+      ++msg_iter) {
 
     // disallow blank category from the start
     if ((*msg_iter).category.empty()) {
@@ -434,7 +476,7 @@ ResultCode scribeHandler::Log(const vector<LogEntry>&  messages) {
       // This may cause some duplicate messages if some messages in this batch
       // were already added to queues
       if(status == STOPPING) {
-        result = TRY_LATER;
+        result = ResultCode::TRY_LATER;
         goto end;
       }
 
@@ -447,7 +489,7 @@ ResultCode scribeHandler::Log(const vector<LogEntry>&  messages) {
     }
 
     if (store_list == NULL) {
-      LOG_OPER("log entry has invalid category <%s>", category.c_str());
+      LOG_DEBUG("log entry has invalid category <%s>", category.c_str());
       incCounter(category, "received bad");
 
       continue;
@@ -455,9 +497,10 @@ ResultCode scribeHandler::Log(const vector<LogEntry>&  messages) {
 
     // Log this message
     addMessage(*msg_iter, store_list);
+
   }
 
-  result = OK;
+  result = ResultCode::OK;
 
  end:
   scribeHandlerLock->release();
@@ -480,18 +523,90 @@ bool scribeHandler::throttleDeny(int num_messages) {
   // If we get a single huge packet it's not cool, but we'd better
   // accept it or we'll keep having to read it and deny it indefinitely
   if (num_messages > (int)maxMsgPerSecond/2) {
-    LOG_OPER("throttle allowing rediculously large packet with <%d> messages", num_messages);
+    LOG_OPER("throttle allowing ridiculously large packet with <%d> messages", num_messages);
     return false;
   }
 
   if (numMsgLastSecond + num_messages > maxMsgPerSecond) {
     LOG_OPER("throttle denying request with <%d> messages. It would exceed max of <%lu> messages this second",
-           num_messages, maxMsgPerSecond);
+        num_messages, maxMsgPerSecond);
     return true;
   } else {
     numMsgLastSecond += num_messages;
     return false;
   }
+}
+
+/*
+ * Start all scribe sources.
+ *
+ * Sources are defined in a directory of XML files, with one or more source
+ * per file.
+ *
+ * Each source must define a `category' and `type', as well as
+ * type-specific parameters. For example, the following could be used to ingest
+ * web server logs as they are produced.
+ *
+ * <sources>
+ *   <source>
+ *     <category>httpd</category>
+ *     <type>tail</type>
+ *     <file>/var/log/httpd.log</file>
+ *   </source>
+ * </sources>
+ *
+ * In this example we see just one `source', however, there could be more in the
+ * same `sources' config.
+ *
+ * By default, configuration files are read from `/etc/scribe.d', unless moved
+ * elsewhere via the `config_dir' global option. This method allows one to add
+ * sources when installing a log-producing application.
+ */
+void scribeHandler::startSources() {
+
+  string configDir;
+  if (!config.getString("config_dir", configDir)) {
+    configDir = "/etc/scribe.d";
+  }
+
+  boost::filesystem::path configPath(configDir);
+
+  if (!boost::filesystem::exists(configPath) ||
+      !boost::filesystem::is_directory(configPath)) {
+    return;
+  }
+
+  boost::filesystem::directory_iterator end_iter;
+  for (boost::filesystem::directory_iterator dir_iter(configPath);
+       dir_iter != end_iter; ++dir_iter) {
+
+    if (!boost::filesystem::is_regular_file(dir_iter->status())) {
+      continue;
+    }
+
+    shared_ptr<SourceConf> sourceConf =
+      shared_ptr<SourceConf>(new SourceConf());
+    sourceConf->load(dir_iter->path().string());
+
+    vector<ptree> allSources;
+    sourceConf->getAllSources(allSources);
+    for (vector<ptree>::iterator allSourcesIter = allSources.begin();
+         allSourcesIter != allSources.end(); ++allSourcesIter) {
+      shared_ptr<Source> newSource;
+      if (Source::createSource(*allSourcesIter, newSource)) {
+        newSource->start();
+        runningSources.push_back(newSource);
+      }
+    }
+  }
+}
+
+void scribeHandler::stopSources() {
+  for (source_list_t::iterator source_iter = runningSources.begin();
+       source_iter != runningSources.end(); ++source_iter) {
+    (*source_iter)->stop();
+  }
+  runningSources.clear();
 }
 
 void scribeHandler::stopStores() {
@@ -511,6 +626,7 @@ void scribeHandler::stopStores() {
 
 void scribeHandler::shutdown() {
   RWGuard monitor(*scribeHandlerLock, true);
+  stopSources();
   stopStores();
   // calling stop to allow thrift to clean up client states and exit
   server->stop();
@@ -524,6 +640,7 @@ void scribeHandler::reinitialize() {
   // This is done without shutting down the Thrift server, so this will not
   // reconfigure any server settings such as port number.
   LOG_OPER("reinitializing");
+  stopSources();
   stopStores();
   initialize();
 }
@@ -561,6 +678,10 @@ void scribeHandler::initialize() {
     config.getUnsigned("max_msg_per_second", maxMsgPerSecond);
     config.getUnsignedLongLong("max_queue_size", maxQueueSize);
     config.getUnsigned("check_interval", checkPeriod);
+    config.getUnsigned("update_status_interval", updateStatusInterval);
+    if (updateStatusInterval <= 0) {
+      updateStatusInterval = DEFAULT_UPDATE_STATUS_INTERVAL; 
+    }
     if (checkPeriod == 0) {
       checkPeriod = 1;
     }
@@ -586,6 +707,58 @@ void scribeHandler::initialize() {
       throw runtime_error("No port number configured");
     }
 
+    startSources();
+
+#ifdef USE_ZOOKEEPER
+    setStatusDetails("initialize ZKClient");
+    if (zkClient.get() == NULL) {
+      LOG_OPER("Creating new ZKClient.");
+      zkClient = auto_ptr<ZKClient> (new ZKClient());
+    }
+
+    // Disconnect if already connected to clear previous state.
+    if (zkClient->getConnectionState() == ZOO_CONNECTED_STATE) {
+        LOG_OPER("Disconnection from existing zk connection");
+        zkClient->disconnect();
+    }
+
+    std::string zkServer;
+    std::string zkRegistrationPrefix;
+    std::string zkAggSelectorKey;
+
+    // comma separated host:port pairs, each corresponding to a zk
+    // server. e.g. "127.0.0.1:3000,127.0.0.1:3001,127.0.0.1:3002"
+    if (config.getString("zk_server", zkServer)) {
+        LOG_OPER("Using zk_server %s", zkServer.c_str());
+    } else {
+        LOG_OPER("No zk_server specified");
+    }
+
+    // znode to register this task at in /path/to/znode format.
+    if (config.getString("zk_registration_prefix", zkRegistrationPrefix)) {
+        LOG_OPER("Using zk_registration_prefix %s", zkRegistrationPrefix.c_str());
+    } else {
+        LOG_OPER("No zk_registration_prefix specified");
+    }
+    if (config.getString("zk_agg_selector", zkAggSelectorKey)) {
+        LOG_OPER("Using zk_agg_selector %s", zkAggSelectorKey.c_str());
+        ZKClient::setAggSelectorStrategy(zkAggSelectorKey);
+    } else {
+        LOG_OPER("No zk_agg_selector specified");
+    }
+
+    if (!zkServer.empty() &&
+        !zkRegistrationPrefix.empty() &&
+        zkClient->getConnectionState() != ZOO_CONNECTED_STATE) {
+      // Only connect at this time if we register ourself. If needed,
+      // we connect+disconnect when discovering remote_host.
+      LOG_OPER("ZKClient connecting to <%s> with RegistrationPrefix <%s>",
+               zkServer.c_str(),
+               zkRegistrationPrefix.c_str());
+      zkClient->connect(zkServer, zkRegistrationPrefix, g_Handler->port);
+    }
+#endif
+
     // check if config sets the size to use for the ThreadManager
     unsigned long int num_threads;
     if (config.getUnsigned("num_thrift_server_threads", num_threads)) {
@@ -593,7 +766,7 @@ void scribeHandler::initialize() {
 
       if (numThriftServerThreads <= 0) {
         LOG_OPER("invalid value for num_thrift_server_threads: %lu",
-                 num_threads);
+            num_threads);
         throw runtime_error("invalid value for num_thrift_server_threads");
       }
     }
@@ -605,15 +778,15 @@ void scribeHandler::initialize() {
     std::vector<pStoreConf> store_confs;
     config.getAllStores(store_confs);
     for (std::vector<pStoreConf>::iterator iter = store_confs.begin();
-         iter != store_confs.end();
-         ++iter) {
-        pStoreConf store_conf = (*iter);
+        iter != store_confs.end();
+        ++iter) {
+      pStoreConf store_conf = (*iter);
 
-        bool success = configureStore(store_conf, &numstores);
+      bool success = configureStore(store_conf, &numstores);
 
-        if (!success) {
-          perfect_config = false;
-        }
+      if (!success) {
+        perfect_config = false;
+      }
     }
   } catch(const std::exception& e) {
     string errormsg("Bad config - exception: ");
@@ -686,7 +859,7 @@ bool scribeHandler::configureStore(pStoreConf store_conf, int *numstores) {
   else if (single_category) {
     // configure single store
     shared_ptr<StoreQueue> result =
-      configureStoreCategory(store_conf, category_list[0], model);
+        configureStoreCategory(store_conf, category_list[0], model);
 
     if (result == NULL) {
       return false;
@@ -718,8 +891,8 @@ bool scribeHandler::configureStore(pStoreConf store_conf, int *numstores) {
     // create a store for each category
     vector<string>::iterator iter;
     for (iter = category_list.begin(); iter < category_list.end(); iter++) {
-       shared_ptr<StoreQueue> result =
-         configureStoreCategory(store_conf, *iter, model);
+      shared_ptr<StoreQueue> result =
+          configureStoreCategory(store_conf, *iter, model);
 
       if (!result) {
         return false;
@@ -735,10 +908,10 @@ bool scribeHandler::configureStore(pStoreConf store_conf, int *numstores) {
 
 // Configures the store specified by the store configuration and category.
 shared_ptr<StoreQueue> scribeHandler::configureStoreCategory(
-  pStoreConf store_conf,                       //configuration for store
-  const string &category,                      //category name
-  const boost::shared_ptr<StoreQueue> &model,  //model to use (optional)
-  bool category_list) {                        //is a list of stores?
+    pStoreConf store_conf,                       //configuration for store
+    const string &category,                      //category name
+    const boost::shared_ptr<StoreQueue> &model,  //model to use (optional)
+    bool category_list) {                        //is a list of stores?
 
   bool is_default = false;
   bool already_created = false;
@@ -754,8 +927,8 @@ shared_ptr<StoreQueue> scribeHandler::configureStoreCategory(
   }
 
   bool is_prefix_category = (!category.empty() &&
-                             category[category.size() - 1] == '*' &&
-                             !category_list);
+      category[category.size() - 1] == '*' &&
+      !category_list);
 
   std::string type;
   if (!store_conf->getString("type", type) ||
@@ -863,8 +1036,8 @@ void scribeHandler::deleteCategoryMap(category_map_t& cats) {
           "iterator in category map holds null pointer");
     }
     for (store_list_t::iterator store_iter = pstores->begin();
-         store_iter != pstores->end();
-         ++store_iter) {
+        store_iter != pstores->end();
+        ++store_iter) {
       if (!*store_iter) {
         throw std::logic_error("deleteCategoryMap: "
             "iterator in store map holds null pointer");

@@ -9,11 +9,37 @@
 #include "common.h"
 #include "file.h"
 #include "HdfsFile.h"
+#include "scribe_server.h"
+
+#ifdef LZO_STREAMING
+/* magic file header for lzopack-compressed files */
+static const unsigned char lzop_magic[9] =
+  { 0x89, 0x4c, 0x5a, 0x4f, 0x00, 0x0d, 0x0a, 0x1a, 0x0a };
+
+/* LZOP default == 256k */
+static const lzo_uint lzo_block_size = 256 * 1024l; 
+
+#define HIGHER_COMPRESSION_LEVEL 7
+
+/* compute a checksum */
+
+#define F_ADLER32_D     0x00000001L
+#define F_ADLER32_C     0x00000002L
+
+#define MAX_ATTEMPTS 10
+
+static const lzo_uint32 lzo_flags = F_ADLER32_D | F_ADLER32_C;
+
+/* LZO1X */
+static const int lzo_method = 1;
+#endif
 
 using namespace std;
 
-HdfsFile::HdfsFile(const std::string& name) : FileInterface(name, false), inputBuffer_(NULL), bufferSize_(0) {
-  LOG_OPER("[hdfs] Connecting to HDFS for %s", name.c_str());
+extern boost::shared_ptr<scribeHandler> g_Handler;
+
+HdfsFile::HdfsFile(const string& name) : FileInterface(name, false), inputBuffer_(NULL), bufferSize_(0) {
+  LOG_DEBUG("[hdfs] Connecting to <%s>", name.c_str());
 
   // First attempt to parse the hdfs cluster from the path name specified.
   // If it fails, then use the default hdfs cluster.
@@ -29,9 +55,11 @@ HdfsFile::HdfsFile(const std::string& name) : FileInterface(name, false), inputB
 
 HdfsFile::~HdfsFile() {
   if (fileSys) {
-    LOG_OPER("[hdfs] disconnecting fileSys for %s", filename.c_str());
-    hdfsDisconnect(fileSys);
-    LOG_OPER("[hdfs] disconnected fileSys for %s", filename.c_str());
+    if (hdfsDisconnect(fileSys) == 0) {
+      LOG_DEBUG("[hdfs] Disconnected fileSys for <%s>", filename.c_str());
+    } else {
+      LOG_OPER("[hdfs] Error disconnecting from fileSys <%s>", filename.c_str());
+    }
   }
   fileSys = 0;
   hfile = 0;
@@ -51,35 +79,106 @@ bool HdfsFile::openRead() {
   return false;
 }
 
-bool HdfsFile::openWrite() {
-  int flags;
+#ifdef LZO_STREAMING
+bool HdfsFile::LZOStringAppendChar(std::string&str, int c) {
+  unsigned char cc = (unsigned char) (c & 0xff);
+  lzo_checksum = lzo_adler32(lzo_checksum, &cc, 1);
+  str.append((const char *)&cc, 1);
+  return true;
+}
 
-  if (!fileSys) {
-    fileSys = connectToPath(filename.c_str());
-  }
-  if (!fileSys) {
-    return false;
-  }
+bool HdfsFile::LZOStringAppendInt32(std::string&str, lzo_xint v) {
+  unsigned char b[4];
+  
+  b[3] = (unsigned char) ((v >>  0) & 0xff);
+  b[2] = (unsigned char) ((v >>  8) & 0xff);
+  b[1] = (unsigned char) ((v >> 16) & 0xff);
+  b[0] = (unsigned char) ((v >> 24) & 0xff);
+
+  lzo_checksum = lzo_adler32(lzo_checksum, b, 4);
+  str.append((const char*)b, 4);
+
+  return true;
+}
+
+bool HdfsFile::LZOStringAppendInt16(std::string&str, unsigned v) {
+  unsigned char b[2];
+
+  b[1] = (unsigned char) (v >>  0);
+  b[0] = (unsigned char) (v >>  8);
+
+  lzo_checksum = lzo_adler32(lzo_checksum, b, 2);
+  str.append((const char*)b, 2);
+
+  return true;
+}
+
+#endif
+
+bool HdfsFile::openWrite() {
   if (hfile) {
     LOG_OPER("[hdfs] already opened for write %s", filename.c_str());
     return false;
   }
 
-  if (hdfsExists(fileSys, filename.c_str()) == 0) {
-    flags = O_WRONLY|O_APPEND; // file exists, append to it.
-  } else {
-    flags = O_WRONLY;
+  if (!fileSys) {
+    LOG_OPER("[hdfs] No connection! Unable to open <%s>", filename.c_str());
+    return false;
   }
+
+  int flags = O_WRONLY;
+
+  LOG_DEBUG("[hdfs] Opening <%s>", filename.c_str());
   hfile = hdfsOpenFile(fileSys, filename.c_str(), flags, 0, 0, 0);
-  if (hfile) {
-    if (flags & O_APPEND) {
-      LOG_OPER("[hdfs] opened for append %s", filename.c_str());
-    } else {
-      LOG_OPER("[hdfs] opened for write %s", filename.c_str());
-    }
-    return true;
+  if (!hfile) {
+    LOG_OPER("[hdfs] Failed opening file <%s>", filename.c_str());
+    return false;
   }
-  return false;
+
+  if (flags & O_APPEND) {
+    LOG_OPER("[hdfs] opened for append %s", filename.c_str());
+  } else {
+    LOG_OPER("[hdfs] opened for write %s", filename.c_str());
+    if(LZOCompressionLevel != 0) {
+      LOG_OPER("[hdfs] writing LZO header to %s", filename.c_str());
+
+      std::string lzo_header((const char*)lzop_magic, sizeof(lzop_magic));
+
+      lzo_checksum = 1; // <- LZOP lzo_adler32(0, NULL, 0);  <- LZO
+
+#define LZOP_VERSION 0x1010
+      unsigned lzop_version = LZOP_VERSION & 0xffff;
+      LZOStringAppendInt16(lzo_header, lzop_version);
+
+      unsigned lzop_lib_version = lzo_version() & 0xffff;
+      LZOStringAppendInt16(lzo_header, lzop_lib_version);
+
+      /* Note this version has no crc-32 support or filter support */
+      unsigned lzop_version_needed_to_extract = 0x0940;
+      LZOStringAppendInt16(lzo_header, lzop_version_needed_to_extract);
+
+      /* 8-bit int, but char works */
+      LZOStringAppendChar(lzo_header, lzo_method);
+      LZOStringAppendChar(lzo_header, LZOCompressionLevel);
+      LZOStringAppendInt32(lzo_header, lzo_flags);
+
+      LZOStringAppendInt32(lzo_header, 0664);  // mode
+      LZOStringAppendInt32(lzo_header, 0);     // ignore mtime
+      LZOStringAppendInt32(lzo_header, 0);     // ignore gmtdiff
+      LZOStringAppendChar(lzo_header, 0);      // ignore filename
+      LZOStringAppendInt32(lzo_header, lzo_checksum);  // header checksum
+
+      tSize bytesWritten = hdfsWrite(fileSys, hfile,
+          lzo_header.data(),
+          (tSize) lzo_header.length());
+
+      if(bytesWritten != (tSize)lzo_header.length()) {
+        LOG_OPER("[hdfs] Failed writing LZO header");
+      }
+      LZObacklogBuffer = std::string("");
+    }
+  }
+  return true;
 }
 
 bool HdfsFile::openTruncate() {
@@ -94,33 +193,214 @@ bool HdfsFile::isOpen() {
 }
 
 void HdfsFile::close() {
-  if (fileSys) {
-    if (hfile) {
-      LOG_OPER("[hdfs] closing %s", filename.c_str());
-      hdfsCloseFile(fileSys, hfile );
-    }
-    hfile = 0;
+  if (!fileSys) {
+    LOG_OPER("[hdfs] No filesystem to close for file <%s>", filename.c_str());
+    return;
+  }
 
-    // Close the file system
-    LOG_OPER("[hdfs] disconnecting fileSys for %s", filename.c_str());
-    hdfsDisconnect(fileSys);
-    LOG_OPER("[hdfs] disconnected fileSys for %s", filename.c_str());
-    fileSys = 0;
+  if (!hfile) {
+    LOG_OPER("[hdfs] No hfile to close for file <%s>", filename.c_str());
+    return;
+  }
+
+  // To avoid "unexpected end of file" errors LZO compressed
+  // files must end with a null byte.
+  if (LZOCompressionLevel != 0) {
+    // Flush LZO buffer
+    bool good = false;
+    const std::string& clearBuf = LZOCompress("", true, &good);
+
+    if (good) {
+      hdfsWrite(fileSys, hfile, clearBuf.data(), clearBuf.length());
+    }
+
+    // write EOF
+    unsigned int eof = 0;
+    hdfsWrite(fileSys, hfile, &eof, sizeof(unsigned int));
+  }
+
+  if (hdfsCloseFile(fileSys, hfile) == 0) {
+    LOG_OPER("[hdfs] Closed <%s>", filename.c_str());
+  } else {
+    LOG_OPER("[hdfs] Error closing <%s>", filename.c_str());
+  }
+  hfile = 0;
+
+  hdfsDisconnect(fileSys);
+  fileSys = 0;
+}
+
+void HdfsFile::setShouldLZOCompress(int compressionLevel) {
+  // Initialize LZO and buffers
+
+  LOG_DEBUG("[hdfs] setting LZO compression level to %d", compressionLevel);
+  LZOCompressionLevel = compressionLevel;
+
+  if (lzo_init() != LZO_E_OK) {
+      LOG_OPER("[hdfs] LZO internal error - lzo_init() failed !!!");
+      LZOCompressionLevel = 0;
   }
 }
 
-bool HdfsFile::write(const std::string& data) {
-  if (!isOpen()) {
-    bool success = openWrite();
+/*
+ * Compress data using the LZO compression codec.
+ *
+ * Data is buffered until at least one blocks worth has been accumulated,
+ * at which point data is compressed and returned. We buffer when:
+ *
+ *   (a) Less than lzo_block_size bytes have been accumulated.
+ *       All bytes are buffered.
+ *
+ *   (b) More than N lzo_block_size bytes have been accumulated.
+ *       Bytes after the last full block are buffered.
+ *
+ * Bytes are not buffered when forcing compression; this is needed
+ * to close files.
+ */
+const std::string HdfsFile::LZOCompress(const std::string& inputData, bool force, bool *success) {
+  *success = true;
 
-    if (!success) {
-      return false;
-    }
+  // Construct a new string containing all data eligible for compression.
+  // A copy is used to preserve inputData, as that is needed in the case
+  // of failure.
+  string data;
+  if (LZObacklogBuffer.length() > 0) {
+    data = LZObacklogBuffer + string(inputData.data());
+    LZObacklogBuffer.clear();
+  } else {
+    data = string(inputData.data());
   }
-  tSize bytesWritten = hdfsWrite(fileSys, hfile, data.data(),
-                                 (tSize) data.length());
-  bool retVal = (bytesWritten == (tSize) data.length()) ? true : false;
-  return retVal;
+
+  // Buffer a partial block, if needed.
+  if (data.length() % lzo_block_size > 0 && force == false) {
+    int blocks = (int) (data.length() / lzo_block_size);
+    LZObacklogBuffer = data.substr(blocks * lzo_block_size);
+    data.erase(blocks * lzo_block_size);
+  }
+
+  /* work buffers */
+  lzo_bytep out = NULL;
+  lzo_bytep wrkmem = NULL;
+  lzo_uint out_len = 0;
+  lzo_uint32 wrk_len = 0;
+  string compressedData("");
+
+  if (LZOCompressionLevel >= HIGHER_COMPRESSION_LEVEL)
+    wrk_len = LZO1X_999_MEM_COMPRESS;
+  else
+    wrk_len = LZO1X_1_MEM_COMPRESS;
+  
+  /*
+   *  allocate compression buffers and work-memory
+   */ 
+  out = (lzo_bytep) calloc(1, lzo_block_size + lzo_block_size / 16 + 64 + 3);
+  wrkmem = (lzo_bytep) calloc(1, wrk_len);
+  if (out == NULL || wrkmem == NULL) {
+    LOG_OPER("[hdfs] calloc failed");
+    *success = false;
+    return data;
+  }
+
+  /* 
+   *  Compress each block and write it
+   */ 
+  int r = 0;
+  for (lzo_uint i = 0; i < data.length(); i += lzo_block_size) {
+      const string block_data = data.substr(i, lzo_block_size);
+
+      /* compress block */
+      if (LZOCompressionLevel >= HIGHER_COMPRESSION_LEVEL) {
+        r = lzo1x_999_compress_level((const unsigned char *)block_data.data(),
+                                     block_data.length(),
+                                     out, &out_len, wrkmem,
+                                     NULL, 0, 0, LZOCompressionLevel);
+      } else {
+        r = lzo1x_1_compress((const unsigned char *)block_data.data(), 
+                             block_data.length(), 
+                             out, &out_len, wrkmem);
+      }
+
+      /* this should never occur */
+      if (r != LZO_E_OK || 
+          out_len > block_data.length() + block_data.length() / 16 + 64 + 3) {
+        LOG_OPER("[hdfs] LZO internal error - compression failed: %d", r);
+        *success = false;
+        return data;
+      }
+
+      /* uncompressed block checksum */
+      lzo_uint32 d_checksum = lzo_adler32(1,  // ADLER32_INIT_VALUE
+                                          (unsigned char *)block_data.data(),
+                                          block_data.length());
+
+      /* write uncompressed block size */
+      LZOStringAppendInt32(compressedData, block_data.length()); 
+
+      /* write all the checksums and block sizes only if compression 
+         was useful (resulted in a smaller data set) */
+      if(out_len < block_data.length()) {
+        /* write compressed block size */
+        lzo_uint32 out_len32 = out_len;
+
+        LZOStringAppendInt32(compressedData, out_len32);
+
+        /* write uncompressed block checksum */
+        LZOStringAppendInt32(compressedData, d_checksum);
+
+        /* write compressed block checksum */
+        lzo_uint32 c_checksum = lzo_adler32(1, out, out_len32);
+        LZOStringAppendInt32(compressedData, c_checksum);
+
+        /* write compressed block data */
+        compressedData.append((const char *)out, out_len);
+      } 
+      /* Otherwise, just write the raw block */
+      else {
+        LZOStringAppendInt32(compressedData, block_data.length());
+
+        /* write uncompressed block checksum */
+        LZOStringAppendInt32(compressedData, d_checksum);
+
+        compressedData.append(block_data);
+      }
+  }
+
+  free(out);        out = NULL;
+  free(wrkmem);  wrkmem = NULL;
+  
+  return compressedData;
+}
+
+/**
+ * Actually write to HDFS.
+ *
+ * @param data Data to be written unmodified to HDFS.
+ * @return Success or failure.
+ */
+bool HdfsFile::writeHelper(const string& data) {
+  tSize bytesWritten = hdfsWrite(fileSys, hfile, data.data(), (tSize) data.length());
+  g_Handler->incCounter("hdfs_bytes_written", bytesWritten);
+  return (bytesWritten == (tSize) data.length()) ? true : false;
+}
+
+bool HdfsFile::write(const std::string& data) {
+  if (!isOpen() && !openWrite()) {
+    return false;
+  }
+
+  if (LZOCompressionLevel > 0) {
+    bool compressSuccess;
+    const string& compressedData = LZOCompress(data, false, &compressSuccess);
+    if (compressedData != data && compressSuccess == true) {
+      return writeHelper(compressedData); // Write compressed data.
+    } else if (compressSuccess == false) {
+      return writeHelper(data); // Write uncompressed data as its not compressible.
+    }
+  } else {
+    return writeHelper(data); // No compression.
+  }
+
+  return false;
 }
 
 void HdfsFile::flush() {
@@ -156,7 +436,9 @@ void HdfsFile::listImpl(const std::string& path,
   }
 
   int value = hdfsExists(fileSys, path.c_str());
-  if (value == 0) {
+  if (value == -1) {
+    return;
+  } else {
     int numEntries = 0;
     hdfsFileInfo* pHdfsFileInfo = 0;
     pHdfsFileInfo = hdfsListDirectory(fileSys, path.c_str(), &numEntries);
@@ -173,8 +455,6 @@ void HdfsFile::listImpl(const std::string& path,
     } else {
       throw std::runtime_error("hdfsListDirectory call failed");
     }
-  } else if (value == -1) {
-    throw std::runtime_error("hdfsExists call failed");
   }
 }
 
@@ -251,9 +531,10 @@ hdfsFS HdfsFile::connectToPath(const char* uri) {
   memcpy((char*) host, uri, colon - uri);
   host[colon - uri] = '\0';
  
-  LOG_OPER("[hdfs] Before hdfsConnectNewInstance(%s, %li)", host, port);
   hdfsFS fs = hdfsConnectNewInstance(host, port);
-  LOG_OPER("[hdfs] After hdfsConnectNewInstance");
+  if (!fs) {
+    LOG_OPER("[hdfs] Error connecting to %s:%lu", host, port);
+  }
   free(host);
   return fs;
 }

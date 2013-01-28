@@ -138,8 +138,8 @@ class FileStoreBase : public Store {
 
   // A full filename includes an absolute path and a sequence number suffix.
   std::string makeBaseFilename(struct tm* creation_time);
-  std::string makeFullFilename(int suffix, struct tm* creation_time,
-                               bool use_full_path = true);
+  std::string makeFullFilename(int suffix, struct tm* creation_time);
+
   std::string makeBaseSymlink();
   std::string makeFullSymlink();
   int  findOldestFile(const std::string& base_filename);
@@ -165,7 +165,9 @@ class FileStoreBase : public Store {
   bool writeMeta;
   bool writeCategory;
   bool createSymlink;
+  bool storeTree;
   bool writeStats;
+  unsigned long lzoCompressionLevel;
   bool rotateOnReopen;
 
   // State
@@ -394,6 +396,18 @@ class NetworkStore : public Store {
   long int timeout;
   std::string remoteHost;
   unsigned long remotePort; // long because it works with config code
+
+  // If positive, will force a reconnection after the set number of messages
+  // has been seen.
+  long int defThresholdBeforeReconnect;
+
+  // To avoid massive synchronized spikes of reconnections, the actual
+  // defThresholdBeforeReconnect will be modified by a random number within
+  // +- allowableDelta.
+  // Deltas greater than defThreshold will be summarily ignored.
+  long int allowableDeltaBeforeReconnect;
+  msg_threshold_map_t msgThresholdMap;
+
   std::string serviceName;
   std::string serviceOptions;
   server_vector_t servers;

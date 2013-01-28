@@ -26,13 +26,21 @@
 
 #include "store.h"
 #include "store_queue.h"
+#include "source.h"
+#include "common.h"
+
+#ifdef USE_ZOOKEEPER
+#include "zk_client.h"
+#endif
 
 typedef std::vector<boost::shared_ptr<StoreQueue> > store_list_t;
 typedef std::map<std::string, boost::shared_ptr<store_list_t> > category_map_t;
+typedef std::vector<boost::shared_ptr<Source> > source_list_t;
+
+std::string resultCodeToString(scribe::thrift::ResultCode::type rc);
 
 class scribeHandler : virtual public scribe::thrift::scribeIf,
                               public facebook::fb303::FacebookBase {
-
  public:
   scribeHandler(unsigned long int port, const std::string& conf_file);
   ~scribeHandler();
@@ -41,18 +49,20 @@ class scribeHandler : virtual public scribe::thrift::scribeIf,
   void initialize();
   void reinitialize();
 
-  scribe::thrift::ResultCode Log(const std::vector<scribe::thrift::LogEntry>& messages);
+  scribe::thrift::ResultCode::type Log(const std::vector<scribe::thrift::LogEntry>& messages);
 
   void getVersion(std::string& _return) {_return = scribeversion;}
   facebook::fb303::fb_status getStatus();
   void getStatusDetails(std::string& _return);
   void setStatus(facebook::fb303::fb_status new_status);
   void setStatusDetails(const std::string& new_status_details);
+  void setQueueSizeCounter(bool get_read_lock);
 
   unsigned long int port; // it's long because that's all I implemented in the conf class
 
   // number of threads processing new Thrift connections
   size_t numThriftServerThreads;
+  unsigned long updateStatusInterval;  // periodic interval to publish counters
 
 
   inline unsigned long long getMaxQueueSize() {
@@ -67,11 +77,15 @@ class scribeHandler : virtual public scribe::thrift::scribeIf,
   void incCounter(std::string category, std::string counter, long amount);
   void incCounter(std::string counter);
   void incCounter(std::string counter, long amount);
+  void setCounter(std::string counter, long amount);
+
+	std::string resultCodeToString(scribe::thrift::ResultCode::type rc);
 
   inline void setServer(
       boost::shared_ptr<apache::thrift::server::TNonblockingServer> & server) {
     this->server = server;
   }
+
   unsigned long getMaxConn() {
     return maxConn;
   }
@@ -88,6 +102,7 @@ class scribeHandler : virtual public scribe::thrift::scribeIf,
 
   // the default stores
   store_list_t defaultStores;
+  source_list_t runningSources;
 
   std::string configFilename;
   facebook::fb303::fb_status status;
@@ -96,10 +111,14 @@ class scribeHandler : virtual public scribe::thrift::scribeIf,
   time_t lastMsgTime;
   unsigned long numMsgLastSecond;
   unsigned long maxMsgPerSecond;
-  unsigned long maxConn;
   unsigned long long maxQueueSize;
+  unsigned long maxConn;
   StoreConf config;
   bool newThreadPerCategory;
+
+#ifdef USE_ZOOKEEPER
+  std::auto_ptr<ZKClient> zkClient;
+#endif
 
   /* mutex to syncronize access to scribeHandler.
    * A single mutex is fine since it only needs to be locked in write mode
@@ -125,6 +144,8 @@ class scribeHandler : virtual public scribe::thrift::scribeIf,
                            const boost::shared_ptr<StoreQueue> &model,
                            bool category_list=false);
   bool configureStore(pStoreConf store_conf, int* num_stores);
+  void startSources();
+  void stopSources();
   void stopStores();
   bool throttleRequest(const std::vector<scribe::thrift::LogEntry>&  messages);
   boost::shared_ptr<store_list_t>
@@ -132,5 +153,6 @@ class scribeHandler : virtual public scribe::thrift::scribeIf,
   void addMessage(const scribe::thrift::LogEntry& entry,
                   const boost::shared_ptr<store_list_t>& store_list);
 };
+
 extern boost::shared_ptr<scribeHandler> g_Handler;
 #endif // SCRIBE_SERVER_H

@@ -196,7 +196,9 @@ FileStoreBase::FileStoreBase(StoreQueue* storeq,
     writeMeta(false),
     writeCategory(false),
     createSymlink(true),
-    writeStats(false),
+    storeTree(false),
+    writeStats(true),
+    lzoCompressionLevel(0),
     rotateOnReopen(false),
     currentSize(0),
     lastRollTime(0),
@@ -298,6 +300,16 @@ void FileStoreBase::configure(pStoreConf configuration, pStoreConf parent) {
     }
   }
 
+  if (configuration->getString("use_tree", tmp)) {
+    if (0 == tmp.compare("yes")) {
+      // force ROLL_HOURLY if config turns on storeTree
+      storeTree = true;
+      rollPeriod = ROLL_HOURLY;
+    } else {
+      storeTree = false;
+    }
+  }
+
   if (configuration->getString("write_stats", tmp)) {
     if (0 == tmp.compare("yes")) {
       writeStats = true;
@@ -308,6 +320,7 @@ void FileStoreBase::configure(pStoreConf configuration, pStoreConf parent) {
 
   configuration->getString("fs_type", fsType);
 
+  configuration->getUnsigned("lzo_compression", lzoCompressionLevel);
   configuration->getUnsigned("max_size", maxSize);
   if(0 == maxSize) {
     maxSize = ULONG_MAX;
@@ -340,7 +353,9 @@ void FileStoreBase::copyCommon(const FileStoreBase *base) {
   writeCategory = base->writeCategory;
   createSymlink = base->createSymlink;
   baseSymlinkName = base->baseSymlinkName;
+  storeTree = base->storeTree;
   writeStats = base->writeStats;
+  lzoCompressionLevel = base->lzoCompressionLevel;
   rotateOnReopen = base->rotateOnReopen;
 
   /*
@@ -361,8 +376,19 @@ bool FileStoreBase::open() {
   return openInternal(rotateOnReopen, NULL);
 }
 
-// Decides whether conditions are sufficient for us to roll files
+/*
+ * Handle periodic file maintenance tasks.
+ *
+ * Files may be configured to close when exceeding a size, or at some
+ * time of day. Unlike traditional log rotation, files are not reopened
+ * immediately - they are lazily opened only when messages have actually
+ * been received. This prevents empty files from being created, which are
+ * common in dynamic environments.
+ */
 void FileStoreBase::periodicCheck() {
+  if (!isOpen()) {
+    return;
+  }
 
   time_t rawtime = time(NULL);
   struct tm timeinfo;
@@ -389,8 +415,8 @@ void FileStoreBase::periodicCheck() {
     }
   }
 
-  if (rotate) {
-    rotateFile(rawtime);
+  if (rotate && isOpen()) {
+    close();
   }
 }
 
@@ -409,18 +435,19 @@ void FileStoreBase::rotateFile(time_t currentTime) {
   openInternal(true, &timeinfo);
 }
 
-string FileStoreBase::makeFullFilename(int suffix, struct tm* creation_time,
-                                       bool use_full_path) {
+string FileStoreBase::makeFullFilename(int suffix, struct tm* creation_time) {
 
   ostringstream filename;
 
-  if (use_full_path) {
-    filename << filePath << '/';
-  }
+  filename << filePath << '/';
   filename << makeBaseFilename(creation_time);
   filename << '_' << setw(5) << setfill('0') << suffix;
 
-  return filename.str();
+  string fullFilename = filename.str();
+  if(lzoCompressionLevel > 0)
+    fullFilename += ".lzo";
+
+  return fullFilename;
 }
 
 string FileStoreBase::makeBaseSymlink() {
@@ -439,30 +466,87 @@ string FileStoreBase::makeFullSymlink() {
   return filename.str();
 }
 
+/**
+ * Configure a base filename that will be prefixed with `file_path',
+ * and potentially suffixed with further modifiers like sequence number
+ * or file extension.
+ *
+ * Store configuration options used:
+ *
+ *   base_filename: typically the category name.
+ *   rotate_period: If filenames should include current time information.
+ *   use_tree: If a date-based directory structure should be used.
+ *
+ * If using rotate_period, base_filename is modified in
+ * BASEFILENAME-YYYY-MM-DD-HH_HOSTNAME_PORT form.
+ * For example: test_category-2011-05-12-21_hostname_1463
+ *
+ * If using both rotate_period and use_tree, base_filename is modified in
+ * YYYY/MM/DD/HH/BASEFILENAME-YYYY-MM-DD-HH_HOSTNAME_PORT form.
+ * For example: 2011/05/12/21/test_category-2011-05-12-21_hostname_1463
+ *
+ * If neither rotate_period nor use_tree are specified, base_filename is
+ * returned unmodified.
+ */
 string FileStoreBase::makeBaseFilename(struct tm* creation_time) {
   ostringstream filename;
 
-  filename << baseFileName;
   if (rollPeriod != ROLL_NEVER) {
-    filename << '-' << creation_time->tm_year + 1900  << '-'
-             << setw(2) << setfill('0') << creation_time->tm_mon + 1 << '-'
-             << setw(2) << setfill('0')  << creation_time->tm_mday;
+    if (storeTree) {
+      filename << creation_time->tm_year + 1900  << '/'
+	       << setw(2) << setfill('0') << creation_time->tm_mon + 1 << '/'
+	       << setw(2) << setfill('0') << creation_time->tm_mday << '/'
+	       << setw(2) << setfill('0') << creation_time->tm_hour << '/';
+      filename << baseFileName;
+      filename << '-' << creation_time->tm_year + 1900  << '-'
+	       << setw(2) << setfill('0') << creation_time->tm_mon + 1 << '-'
+	       << setw(2) << setfill('0')  << creation_time->tm_mday << "-"
+	       << setw(2) << setfill('0')  << creation_time->tm_hour;
+      char fqdn[1024];
+      fqdn[1023] = '\0';
+      gethostname(fqdn, 1023);
+      string hostname (fqdn);
+      size_t pos = hostname.find(".");
+      if (pos != string::npos) {
+        hostname.erase(pos);
+      }
+      filename << '_' << hostname
+          << '_' << boost::lexical_cast<string>(g_Handler->port);
+    } else {
+      filename << baseFileName;
 
-  }
+      filename << '-' << creation_time->tm_year + 1900  << '-'
+	       << setw(2) << setfill('0') << creation_time->tm_mon + 1 << '-'
+	       << setw(2) << setfill('0')  << creation_time->tm_mday;
+    }
+  } else {
+    filename << baseFileName;
+  } 
+
   return filename.str();
 }
 
 // returns the suffix of the newest file matching base_filename
 int FileStoreBase::findNewestFile(const string& base_filename) {
 
-  std::vector<std::string> files = FileInterface::list(filePath, fsType);
+  /// do not use filePath when we are using the tree store.
+  string currentPath;
+  if (storeTree) { 
+    string::size_type slash;
+    currentPath = filePath + "/" + base_filename;
+    slash = currentPath.find_last_of("/");
+    currentPath = currentPath.substr(0, slash);
+  } else {
+    currentPath = filePath;
+  }
+
+  std::vector<std::string> files = FileInterface::list(currentPath, fsType);
 
   int max_suffix = -1;
   std::string retval;
   for (std::vector<std::string>::iterator iter = files.begin();
        iter != files.end();
        ++iter) {
-
     int suffix = getFileSuffix(*iter, base_filename);
     if (suffix > max_suffix) {
       max_suffix = suffix;
@@ -493,15 +577,31 @@ int FileStoreBase::findOldestFile(const string& base_filename) {
 int FileStoreBase::getFileSuffix(const string& filename,
                                 const string& base_filename) {
   int suffix = -1;
+
+  string mybase;
   string::size_type suffix_pos = filename.rfind('_');
-
-  bool retVal = (0 == filename.substr(0, suffix_pos).compare(base_filename));
-
+  string::size_type slash;
+  
+  if ((slash = base_filename.find_last_of("/")) != 0) {
+    mybase  = base_filename.substr(slash + 1,base_filename.length()-slash);
+  } else {
+    mybase  = base_filename;
+  }
+  
+  bool retVal = (0 == filename.substr(0, suffix_pos).compare(mybase));
+  
   if (string::npos != suffix_pos &&
       filename.length() > suffix_pos &&
       retVal) {
     stringstream stream;
-    stream << filename.substr(suffix_pos + 1);
+    string::size_type lzo_suffix = filename.rfind(".lzo");
+
+    if(lzo_suffix != string::npos) {
+      stream << filename.substr(suffix_pos + 1, filename.length() - lzo_suffix+1);
+    }
+    else
+      stream << filename.substr(suffix_pos + 1);
+
     stream >> suffix;
   }
   return suffix;
@@ -688,6 +788,7 @@ bool FileStore::openInternal(bool incrementFilename, struct tm* current_time) {
       setStatus("file open error");
       return false;
     }
+    writeFile->setShouldLZOCompress(lzoCompressionLevel);
 
     success = writeFile->createDirectory(baseFilePath);
 
@@ -719,8 +820,7 @@ bool FileStore::openInternal(bool incrementFilename, struct tm* current_time) {
         boost::shared_ptr<FileInterface> tmp =
           FileInterface::createFileInterface(fsType, symlinkName, isBufferFile);
         tmp->deleteFile();
-        string symtarget = makeFullFilename(suffix, current_time, false);
-        writeFile->createSymlink(symtarget, symlinkName);
+        writeFile->createSymlink(file, symlinkName);
       }
       // else it confuses the filename code on reads
 
@@ -770,17 +870,16 @@ shared_ptr<Store> FileStore::copy(const std::string &category) {
   return copied;
 }
 
+/*
+ * Entry point for new messages into a FileStore.
+ *
+ * Open a new file if needed, and write messages into the file.
+ */
 bool FileStore::handleMessages(boost::shared_ptr<logentry_vector_t> messages) {
-
-  if (!isOpen()) {
-    if (!open()) {
-      LOG_OPER("[%s] File failed to open FileStore::handleMessages()",
-               categoryHandled.c_str());
-      return false;
-    }
+  if (!isOpen() && !openInternal(true, NULL)) {
+    return false;
   }
 
-  // write messages to current file
   return writeMessages(messages);
 }
 
@@ -1220,8 +1319,7 @@ bool ThriftFileStore::openInternal(bool incrementFilename, struct tm* current_ti
   if (createSymlink) {
     string symlinkName = makeFullSymlink();
     unlink(symlinkName.c_str());
-    string symtarget = makeFullFilename(suffix, current_time, false);
-    symlink(symtarget.c_str(), symlinkName.c_str());
+    symlink(filename.c_str(), symlinkName.c_str());
   }
 
   return true;
@@ -1386,7 +1484,11 @@ void BufferStore::configure(pStoreConf configuration, pStoreConf parent) {
 }
 
 bool BufferStore::isOpen() {
-  return primaryStore->isOpen() || secondaryStore->isOpen();
+  if (!primaryStore || !secondaryStore) {
+    return false;
+  } else {
+    return primaryStore->isOpen() || secondaryStore->isOpen();
+  }
 }
 
 bool BufferStore::open() {
@@ -1534,16 +1636,10 @@ void BufferStore::periodicCheck() {
 
   if (state == DISCONNECTED) {
     if (now - lastOpenAttempt > retryInterval) {
-      if (primaryStore->open()) {
-        // Success.  Check if we need to send buffers from secondary to primary
-        if (replayBuffer) {
-          changeState(SENDING_BUFFER);
-        } else {
-          changeState(STREAMING);
-        }
+      if (replayBuffer) {
+        changeState(SENDING_BUFFER);
       } else {
-        // this resets the retry timer
-        changeState(DISCONNECTED);
+        changeState(STREAMING);
       }
     }
   }
@@ -1675,7 +1771,7 @@ void BufferStore::setNewRetryInterval(bool success) {
         else {
           retryInterval = minRetryInterval;
         }
-        if (retryInterval < minRetryInterval) {
+        if (retryInterval < static_cast <time_t> (minRetryInterval)) {
           retryInterval = minRetryInterval;
         }
         numContSuccess = 0;
@@ -1687,7 +1783,7 @@ void BufferStore::setNewRetryInterval(bool success) {
     else {
       retryInterval = static_cast <time_t> (retryInterval*MULT_INC_FACTOR);
       retryInterval += (rand() % maxRandomOffset);
-      if (retryInterval > maxRetryInterval) {
+      if (retryInterval > static_cast <time_t> (maxRetryInterval)) {
         retryInterval = maxRetryInterval;
       }
       numContSuccess = 0;
@@ -1743,10 +1839,10 @@ NetworkStore::NetworkStore(StoreQueue* storeq,
     serviceBased(false),
     remotePort(0),
     serviceCacheTimeout(DEFAULT_NETWORKSTORE_CACHE_TIMEOUT),
+    lastServiceCheck(0),
     ignoreNetworkError(false),
     configmod(NULL),
-    opened(false),
-    lastServiceCheck(0) {
+    opened(false) {
   // we can't open the connection until we get configured
 
   // the bool for opened ensures that we don't make duplicate
@@ -1777,6 +1873,18 @@ void NetworkStore::configure(pStoreConf configuration, pStoreConf parent) {
   if (!configuration->getInt("timeout", timeout)) {
     timeout = DEFAULT_SOCKET_TIMEOUT_MS;
   }
+
+  // TODO figure out an appropriate way to specify the per-connection thresholds and populate msgThresholdMap
+  if (!configuration->getInt("default_max_msg_before_reconnect", defThresholdBeforeReconnect)) {
+    defThresholdBeforeReconnect = NO_THRESHOLD;
+  }
+	LOG_OPER("DEF THRESHOLD %ld", defThresholdBeforeReconnect);
+  if (!configuration->getInt("allowable_delta_before_reconnect", allowableDeltaBeforeReconnect)) {
+    allowableDeltaBeforeReconnect = -1;
+  }
+  msgThresholdMap[(serviceBased ? serviceName : ConnPool::makeKey(remoteHost, remotePort))] = defThresholdBeforeReconnect;
+  g_connPool.mergeReconnectThresholds(&msgThresholdMap,
+      defThresholdBeforeReconnect, allowableDeltaBeforeReconnect);
 
   string temp;
   if (configuration->getString("use_conn_pool", temp)) {
@@ -1871,8 +1979,10 @@ bool NetworkStore::open() {
         LOG_OPER("Logic error: NetworkStore::open unpooledConn is not NULL"
             " service = %s", serviceName.c_str());
       }
+
       unpooledConn = shared_ptr<scribeConn>(new scribeConn(serviceName,
-            servers, static_cast<int>(timeout)));
+            servers, static_cast<int>(timeout),
+            defThresholdBeforeReconnect, allowableDeltaBeforeReconnect));
       opened = unpooledConn->open();
       if (!opened) {
         unpooledConn.reset();
@@ -1894,8 +2004,11 @@ bool NetworkStore::open() {
         LOG_OPER("Logic error: NetworkStore::open unpooledConn is not NULL"
             " %s:%lu", remoteHost.c_str(), remotePort);
       }
+      int msgThreshold = msgThresholdMap.count(ConnPool::makeKey(remoteHost, remotePort)) ?
+          msgThresholdMap[ConnPool::makeKey(remoteHost, remotePort)]
+           : defThresholdBeforeReconnect;
       unpooledConn = shared_ptr<scribeConn>(new scribeConn(remoteHost,
-          remotePort, static_cast<int>(timeout)));
+          remotePort, static_cast<int>(timeout), msgThreshold, allowableDeltaBeforeReconnect));
       opened = unpooledConn->open();
       if (!opened) {
         unpooledConn.reset();
@@ -1942,6 +2055,8 @@ shared_ptr<Store> NetworkStore::copy(const std::string &category) {
   store->useConnPool = useConnPool;
   store->serviceBased = serviceBased;
   store->timeout = timeout;
+  store->defThresholdBeforeReconnect = defThresholdBeforeReconnect;
+  store->msgThresholdMap = msgThresholdMap;
   store->remoteHost = remoteHost;
   store->remotePort = remotePort;
   store->serviceName = serviceName;
