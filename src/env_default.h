@@ -45,7 +45,7 @@ typedef std::vector<std::pair<std::string, int> > server_vector_t;
 
 // scribe version
 const std::string scribeversion("2.2");
-#define DEFAULT_CONF_FILE_LOCATION "/usr/local/scribe/scribe.conf"
+const std::string DEFAULT_CONF_FILE_LOCATION("/usr/local/scribe/scribe.conf");
 
 /*
  * This file contains methods for handling tasks that depend
