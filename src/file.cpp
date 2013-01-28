@@ -22,6 +22,7 @@
 #include "common.h"
 #include "file.h"
 #include "HdfsFile.h"
+#include "S3File.h"
 
 #define INITIAL_BUFFER_SIZE (64 * 1024)
 #define LARGE_BUFFER_SIZE (16 * INITIAL_BUFFER_SIZE) /* arbitrarily chosen */
@@ -37,6 +38,8 @@ boost::shared_ptr<FileInterface> FileInterface::createFileInterface(const std::s
     return shared_ptr<FileInterface>(new StdFile(name, framed));
   } else if (0 == type.compare("hdfs")) {
     return shared_ptr<FileInterface>(new HdfsFile(name));
+  } else if (0 == type.compare("s3")) {
+    return shared_ptr<FileInterface>(new S3File(name));
   } else {
     return shared_ptr<FileInterface>();
   }
