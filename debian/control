@@ -20,7 +20,7 @@ Standards-Version: 3.8.4
 Package: scribe
 Architecture: any
 Depends: ${shlibs:Depends}, ${misc:Depends},
- daemontools
+ daemontools,
  default-jre-headless,
  libfb303,
  libthrift0,

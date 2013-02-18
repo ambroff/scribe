@@ -64,7 +64,6 @@ install: build
 	# Add here commands to install the package into debian/scribe.
 	$(MAKE) DESTDIR=$(CURDIR)/debian/scribe install
 	cp $(CURDIR)/examples/scribe_cat $(CURDIR)/debian/scribe/usr/bin
-	cp $(CURDIR)/examples/scribe_apache $(CURDIR)/debian/scribe/usr/bin
 	cp $(CURDIR)/examples/scribe_ctrl $(CURDIR)/debian/scribe/usr/bin
 	mkdir -p $(CURDIR)/debian/scribe/etc/scribe
 	cp $(CURDIR)/debian/scribe.conf $(CURDIR)/debian/scribe/etc/scribe/scribe.conf
