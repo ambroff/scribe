@@ -60,7 +60,7 @@ FB_WITH_PATH([fb_home], [fbpath], [${EXTERNAL_PATH}/libfacebook])
 FB_WITH_PATH([hadoop_home], [hadooppath], [/usr/local])
 
 # Require boost 1.36 with system and filesytem libraries
-AX_BOOST_BASE([1.36])
+AX_BOOST_BASE([1.40])
 AX_BOOST_SYSTEM
 AX_BOOST_FILESYSTEM
 
