@@ -68,6 +68,10 @@ AX_BOOST_FILESYSTEM
 # Change Makefile.am also to add subdirectly.
 AC_CONFIG_FILES(Makefile src/Makefile lib/py/Makefile)
 
+# Check for headers
+AC_CHECK_HEADERS([inttypes.h])
+AC_CHECK_HEADERS([netinet/in.h])
+
 ############################################################################
 # DO NOT TOUCH.
 
