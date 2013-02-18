@@ -52,8 +52,18 @@ endif
 
 
 # Set libraries external to this component.
-EXTERNAL_LIBS = -L$(thrift_home)/lib -L$(fb303_home)/lib -L$(hadoop_home)/lib -lfb303 -lthrift -lthriftnb
-EXTERNAL_LIBS += -levent -lpthread
+EXTERNAL_LIBS = \
+  -L$(thrift_home)/lib \
+  -L$(fb303_home)/lib \
+  -L$(hadoop_home)/lib \
+  -lfb303 \
+  -lthrift \
+  -lthriftnb \
+  -levent \
+  -lpthread \
+  $(BOOST_LDFLAGS) \
+  $(BOOST_SYSTEM_LIB) \
+  $(BOOST_FILESYSTEM_LIB)
 if USE_SCRIBE_HDFS
   EXTERNAL_LIBS += -lhdfs -ljvm
 endif
@@ -71,8 +81,6 @@ AM_CPPFLAGS += -I$(fb303_home)/include/thrift/fb303
 AM_CPPFLAGS += -I$(hadoop_home)/include
 AM_CPPFLAGS += $(BOOST_CPPFLAGS)
 AM_CPPFLAGS += $(FB_CPPFLAGS) $(DEBUG_CPPFLAGS)
-
-AM_LDFLAGS = $(BOOST_LDFLAGS) $(BOOST_SYSTEM_LIB) $(BOOST_FILESYSTEM_LIB)
 
 # Section 3 #############################################################################
 # GENERATE BUILD RULES
