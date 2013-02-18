@@ -12,7 +12,7 @@ Build-Depends: debhelper (>= 5),
  libfb303-dev,
  libthrift-dev,
  python,
- python-support
+ python-support,
  default-jdk,
  thrift-compiler,
 Standards-Version: 3.8.4
