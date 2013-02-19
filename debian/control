@@ -6,6 +6,7 @@ Uploaders: Chris Goffinet <cg@chrisgoffinet.com>, Ian Eure <ian@simplegeo.com>, 
 Build-Depends: debhelper (>= 5),
  automake,
  autotools-dev,
+ default-jdk,
  libboost-dev (>= 1.40),
  libboost-filesystem-dev (>= 1.40),
  libevent-dev,
@@ -13,8 +14,8 @@ Build-Depends: debhelper (>= 5),
  libthrift-dev,
  python,
  python-support,
- default-jdk,
  thrift-compiler,
+ libhdfs-dev
 Standards-Version: 3.8.4
 
 Package: scribe
@@ -23,6 +24,7 @@ Depends: ${shlibs:Depends}, ${misc:Depends},
  daemontools,
  default-jre-headless,
  libfb303,
+ libhdfs1
  libthrift0,
  openjdk-7-jre | openjdk-6-jre | java7-runtime | java6-runtime
 Description: Facebook's distributed, streaming log server
