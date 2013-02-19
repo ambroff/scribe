@@ -15,3 +15,8 @@ mkinstalldirs
 *.o
 *.a
 fb303
+/debian/*-stamp
+/debian/*.debhelper*
+/debian/*.substvars
+/debian/files
+/debian/scribe/
