@@ -1,3 +1,9 @@
+scribe (2.2~jb-1) lucid; urgency=low
+
+  * Lots of stuff.
+
+ -- Kyle Ambroff <ambroff@jawbone.com>  Mon, 18 Feb 2013 22:27:09 -0800
+
 scribe (2.2-sg11-7) UNRELEASED; urgency=low
 
   * examples/scribe_apache

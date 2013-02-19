@@ -24,7 +24,7 @@ Depends: ${shlibs:Depends}, ${misc:Depends},
  daemontools,
  default-jre-headless,
  libfb303,
- libhdfs1
+ libhdfs1,
  libthrift0,
  openjdk-7-jre | openjdk-6-jre | java7-runtime | java6-runtime
 Description: Facebook's distributed, streaming log server

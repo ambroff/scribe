@@ -224,7 +224,7 @@ hdfsFS HdfsFile::connectToPath(const char* uri) {
   if (strncmp(proto, uri, strlen(proto)) != 0) {
     // uri doesn't start with hdfs:// -> use default:0, which is special
     // to libhdfs.
-    return hdfsConnectNewInstance("default", 0);
+    return hdfsConnect("default", 0);
   }
  
   // Skip the hdfs:// part.
@@ -251,9 +251,9 @@ hdfsFS HdfsFile::connectToPath(const char* uri) {
   memcpy((char*) host, uri, colon - uri);
   host[colon - uri] = '\0';
  
-  LOG_OPER("[hdfs] Before hdfsConnectNewInstance(%s, %li)", host, port);
-  hdfsFS fs = hdfsConnectNewInstance(host, port);
-  LOG_OPER("[hdfs] After hdfsConnectNewInstance");
+  LOG_OPER("[hdfs] Before hdfsConnect(%s, %li)", host, port);
+  hdfsFS fs = hdfsConnect(host, port);
+  LOG_OPER("[hdfs] After hdfsConnect");
   free(host);
   return fs;
 }

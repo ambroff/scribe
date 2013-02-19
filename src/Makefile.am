@@ -64,9 +64,6 @@ EXTERNAL_LIBS = \
   $(BOOST_LDFLAGS) \
   $(BOOST_SYSTEM_LIB) \
   $(BOOST_FILESYSTEM_LIB)
-if USE_SCRIBE_HDFS
-  EXTERNAL_LIBS += -lhdfs -ljvm
-endif
 
 # Section 2 ############################################################################
 # Set common flags recognized by automake.
@@ -78,11 +75,16 @@ AM_CPPFLAGS += -I$(thrift_home)/include
 AM_CPPFLAGS += -I$(thrift_home)/include/thrift
 AM_CPPFLAGS += -I$(fb303_home)/include/thrift
 AM_CPPFLAGS += -I$(fb303_home)/include/thrift/fb303
-AM_CPPFLAGS += -I$(hadoop_home)/include
-AM_CPPFLAGS += -I$(java_home)/include
-AM_CPPFLAGS += -I$(java_home)/include/linux
 AM_CPPFLAGS += $(BOOST_CPPFLAGS)
 AM_CPPFLAGS += $(FB_CPPFLAGS) $(DEBUG_CPPFLAGS)
+
+if USE_SCRIBE_HDFS
+  EXTERNAL_LIBS += -lhdfs -ljvm -L$(java_home)/jre/lib/amd64/server
+  AM_CPPFLAGS += -I$(hadoop_home)/include
+  AM_CPPFLAGS += -I$(java_home)/include
+  AM_CPPFLAGS += -I$(java_home)/include/linux
+endif
+
 
 # Section 3 #############################################################################
 # GENERATE BUILD RULES
