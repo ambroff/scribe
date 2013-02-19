@@ -79,6 +79,8 @@ AM_CPPFLAGS += -I$(thrift_home)/include/thrift
 AM_CPPFLAGS += -I$(fb303_home)/include/thrift
 AM_CPPFLAGS += -I$(fb303_home)/include/thrift/fb303
 AM_CPPFLAGS += -I$(hadoop_home)/include
+AM_CPPFLAGS += -I$(java_home)/include
+AM_CPPFLAGS += -I$(java_home)/include/linux
 AM_CPPFLAGS += $(BOOST_CPPFLAGS)
 AM_CPPFLAGS += $(FB_CPPFLAGS) $(DEBUG_CPPFLAGS)
 
