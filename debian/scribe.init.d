@@ -14,6 +14,7 @@ NAME=scribe
 DESC=scribe
 DAEMON_OPTS="-c /etc/scribe/scribe.conf"
 SCRIBE_CTRL=/usr/bin/scribe_ctrl
+PIDFILE=/var/run/$NAME.pid
 
 test -x $DAEMON || exit 0
 
@@ -27,12 +28,16 @@ set -e
 case "$1" in
   start)
 	echo -n "Starting $DESC: "
-	start-stop-daemon --start --quiet --exec $DAEMON -- $DAEMON_OPTS 2>&1 | multilog s16777215 n30 /var/log/scribe &
+	start-stop-daemon --start --quiet --background --make-pidfile \
+		--pidfile $PIDFILE --exec $DAEMON \
+		-- $DAEMON_OPTS 2>&1 | multilog s16777215 n30 /var/log/scribe &
 	echo "$NAME."
 	;;
   stop)
 	echo -n "Stopping $DESC: "
-	$SCRIBE_CTRL stop
+	if $SCRIBE_CTRL stop; then
+		rm -f $PIDFILE
+	fi
 	echo "$NAME."
 	;;
   reload)
@@ -41,12 +46,10 @@ case "$1" in
   	;;
   restart)
     echo -n "Restarting $DESC: "
-	#$SCRIBE_CTRL stop
 	set +e;
 	$0 stop
 	set -e;
 	sleep 1
-	#start-stop-daemon --start --quiet --background --exec $DAEMON -- $DAEMON_OPTS
 	$0 start
 	echo "$NAME."
 	;;
