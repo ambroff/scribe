@@ -21,7 +21,9 @@ Architecture: any
 Depends: ${shlibs:Depends}, ${misc:Depends},
  daemontools,
  libfb303,
- libthrift0
+ libthrift0,
+ python-fb303,
+ python-thrift
 Description: Facebook's distributed, streaming log server
  Scribe is a server for aggregating log data streamed in real time
  from a large number of servers. It is designed to be scalable,
