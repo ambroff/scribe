@@ -16,8 +16,6 @@ DEB_HOST_GNU_TYPE   ?= $(shell dpkg-architecture -qDEB_HOST_GNU_TYPE)
 DEB_BUILD_GNU_TYPE  ?= $(shell dpkg-architecture -qDEB_BUILD_GNU_TYPE)
 DEB_BUILD_ARCH      ?= $(shell dpkg-architecture -qDEB_BUILD_ARCH)
 
-JAVA_HOME := /usr/lib/jvm/default-java
-
 configure: $(CURDIR)/debian/configure-stamp
 $(CURDIR)/debian/configure-stamp:
 	dh_testdir
@@ -25,9 +23,7 @@ $(CURDIR)/debian/configure-stamp:
 	$(CURDIR)/configure \
 		--prefix=/usr \
 		--with-thriftpath=/usr \
-		--with-fb303path=/usr \
-		--with-javahome=$(JAVA_HOME) \
-		--enable-hdfs
+		--with-fb303path=/usr
 	touch $@
 
 build: $(CURDIR)/debian/build-stamp
