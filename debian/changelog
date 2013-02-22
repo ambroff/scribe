@@ -1,3 +1,9 @@
+scribe (2.2~jb-2) lucid; urgency=low
+
+  * Create scribe user on install.
+
+ -- Kyle Ambroff <ambroff@jawbone.com>  Fri, 22 Feb 2013 02:57:48 +0000
+
 scribe (2.2~jb-1) lucid; urgency=low
 
   * Lots of stuff.
