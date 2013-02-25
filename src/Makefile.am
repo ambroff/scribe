@@ -75,7 +75,7 @@ AM_CPPFLAGS += -I$(thrift_home)/include
 AM_CPPFLAGS += -I$(thrift_home)/include/thrift
 AM_CPPFLAGS += -I$(fb303_home)/include/thrift
 AM_CPPFLAGS += -I$(fb303_home)/include/thrift/fb303
-AM_CPPFLAGS += $(BOOST_CPPFLAGS)
+AM_CPPFLAGS += $(BOOST_CPPFLAGS) -DBOOST_FILESYSTEM_VERSION=2
 AM_CPPFLAGS += $(FB_CPPFLAGS) $(DEBUG_CPPFLAGS)
 
 if USE_SCRIBE_HDFS
