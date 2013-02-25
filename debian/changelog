@@ -1,3 +1,9 @@
+scribe (2.2~jb-3) lucid; urgency=low
+
+  * Fix bug in log rotation
+
+ -- Kyle Ambroff <ambroff@jawbone.com>  Sun, 24 Feb 2013 20:38:02 -0800
+
 scribe (2.2~jb-2) lucid; urgency=low
 
   * Create scribe user on install.
