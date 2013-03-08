@@ -1,0 +1,2 @@
+scribe	soft	nofile	65535
+scribe	hard	nofile	65535
