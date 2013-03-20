@@ -53,7 +53,8 @@ install: build
 	cp $(CURDIR)/debian/scribe.conf \
 		$(CURDIR)/debian/scribe/etc/scribe/scribe.conf
 	find ${CURDIR}/debian/scribe -name \*.pyc -exec rm {} \;
-    cp $(CURDIR)/debian/limits \
+	mkdir -p $(CURDIR)/debian/scribe/etc/security/limits.d
+	cp $(CURDIR)/debian/limits \
 		$(CURDIR)/debian/scribe/etc/security/limits.d/scribe
 
 binary-indep: build install
