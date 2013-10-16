@@ -33,7 +33,7 @@ case "$1" in
 	echo -n "Starting $DESC: "
 	mkdir -p /var/log/scribe
 	chown -R $SCRIBE_USER:$SCRIBE_GROUP /var/log/scribe
-	start-stop-daemon --start --quiet --background --make-pidfile \
+	start-stop-daemon --start --quiet --make-pidfile \
 		--pidfile $PIDFILE --chuid $SCRIBE_USER:$SCRIBE_GROUP \
 		--exec $DAEMON \
 		-- $DAEMON_OPTS 2>&1 | multilog s16777215 n30 /var/log/scribe &
