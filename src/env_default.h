@@ -34,8 +34,6 @@
 #include "thrift/transport/TBufferTransports.h"
 #include "thrift/transport/TSimpleFileTransport.h"
 
-#include "fb303/FacebookBase.h"
-
 #include "src/gen-cpp/scribe.h"
 #include "src/gen-cpp/BucketStoreMapping.h"
 
@@ -44,8 +42,7 @@ typedef std::vector<logentry_ptr_t> logentry_vector_t;
 typedef std::vector<std::pair<std::string, int> > server_vector_t;
 
 // scribe version
-const std::string scribeversion("2.2");
-const std::string DEFAULT_CONF_FILE_LOCATION("/usr/local/scribe/scribe.conf");
+const std::string DEFAULT_CONF_FILE_LOCATION("/etc/scribe/scribe.conf");
 
 /*
  * This file contains methods for handling tasks that depend
