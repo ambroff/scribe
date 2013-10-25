@@ -60,7 +60,7 @@ FB_WITH_PATH([fb_home], [fbpath], [${EXTERNAL_PATH}/libfacebook])
 FB_WITH_PATH([hadoop_home], [hadooppath], [/usr/local])
 FB_WITH_PATH([java_home], [javahome], [/usr/lib/jvm/default-java])
 
-# Require boost 1.36 with system and filesytem libraries
+# Require boost 1.40 with system and filesytem libraries
 AX_BOOST_BASE([1.40])
 AX_BOOST_SYSTEM
 AX_BOOST_FILESYSTEM
