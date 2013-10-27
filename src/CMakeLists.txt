@@ -1,6 +1,7 @@
 # -*- cmake -*-
 
 include(Common)
+include(Thrift)
 include(Utils)
 include(UnitTesting)
 
@@ -13,8 +14,6 @@ find_package(
   COMPONENTS system filesystem
   REQUIRED
   )
-
-find_package(Thrift)
 
 include_directories(
   ${CMAKE_CURRENT_SOURCE_DIR}

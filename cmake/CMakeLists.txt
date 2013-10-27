@@ -11,6 +11,7 @@ set(cmake_SOURCE_FILES
   Common.cmake
   FindThrift.cmake
   LintelFind.cmake
+  Thrift.cmake
   UnitTesting.cmake
   Utils.cmake)
 

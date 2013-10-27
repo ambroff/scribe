@@ -27,6 +27,15 @@ enum ResultCode
   TRY_LATER
 }
 
+enum Status {
+  DEAD = 0,
+  STARTING = 1,
+  ALIVE = 2,
+  STOPPING = 3,
+  STOPPED = 4,
+  WARNING = 5,
+}
+
 struct LogEntry
 {
   1:  string category,
@@ -35,5 +44,66 @@ struct LogEntry
 
 service scribe
 {
+  /**
+   * Send a list of log entries to this server. If the operation is successful,
+   * this function will respond with OK. TRY_LATER means that the entire list
+   * should be sent again.
+   */
   ResultCode Log(1: list<LogEntry> messages);
+
+  /**
+   * Returns the version of the service
+   */
+  string getVersion(),
+
+  /**
+   * Gets the status of this service
+   */
+  Status getStatus(),
+
+  /**
+   * User friendly description of status, such as why the service is in
+   * the dead or warning state, or what is being started or stopped.
+   */
+  string getStatusDetails(),
+
+  /**
+   * Gets the value of a single counter
+   */
+  map<string, i64> getCounters(),
+
+  /**
+   * Gets the counters for this service
+   */
+  i64 getCounter(1: string key),
+
+  /**
+   * Sets an option
+   */
+  void setOption(1: string key),
+
+  /**
+   * Gets an option
+   */
+  void getOption(1: string key),
+
+  /**
+   * Gets all options
+   */
+  map<string, string> getOptions(),
+
+  /**
+   * Returns the unix time that the server has been running since
+   */
+  i64 aliveSince(),
+
+  /**
+   * Tell the server to reload its configuration, reopen log files, etc
+   */
+  oneway void reinitialize(),
+
+  /**
+   * Suggest a shutdown to the server
+   */
+  oneway void shutdown()
 }

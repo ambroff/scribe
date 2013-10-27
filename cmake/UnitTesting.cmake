@@ -22,7 +22,7 @@
 find_package(PythonInterp REQUIRED)
 
 set(Boost_USE_MULTITHREADED ON)
-find_package(Boost 1.42.0 COMPONENTS unit_test_framework)
+find_package(Boost 1.40.0 COMPONENTS unit_test_framework)
 
 macro (TEST_COMMAND OUTVAR LD_LIBRARY_PATH)
   # nat wonders how Kitware can use the term 'function' for a construct that
